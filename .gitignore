@@ -1,0 +1,15 @@
+# python stuff
+__pycache__/
+*.py[cod]
+
+# local recovery folders
+VSCode_Recovered_Files/
+recovery/
+temp_recovery/
+
+# os stuff
+.DS_Store
+Thumbs.db
+
+# other stuff
+.history
