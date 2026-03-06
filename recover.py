@@ -31,7 +31,9 @@ VERSION_DEPTH = 2
 # by default, this creates a folder on your desktop. 
 # you can change Path.home() / "Desktop" to any path you want. 
 # you can also change "VSCode_Recovered_Files" to, perhaps "YOU_ALMOST_GAVE_ME_A_HEART_ATTACK"?
-OUTPUT_DIR = Path.home() / "Desktop" / "VSCode_Recovered_Files"
+_HOME_DIR = Path.home()
+_DESKTOP_DIR = _HOME_DIR / "Desktop"
+OUTPUT_DIR = (_DESKTOP_DIR if _DESKTOP_DIR.exists() else _HOME_DIR) / "VSCode_Recovered_Files"
 
 # 4. want the recovered files dumped straight back into the original project?
 # set this to True and the script will make a subfolder called
@@ -62,6 +64,90 @@ HOURS_BACK = None
 
 # ----------------------------------
 
+
+def _enable_windows_ansi():
+    # try to enable VT100/ANSI mode for classic Windows consoles.
+    if sys.platform != "win32":
+        return True
+
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        if handle in (0, -1):
+            return False
+
+        mode = ctypes.c_uint()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)) == 0:
+            return False
+
+        enable_vt = 0x0004
+        if mode.value & enable_vt:
+            return True
+
+        return kernel32.SetConsoleMode(handle, mode.value | enable_vt) != 0
+    except Exception:
+        return False
+
+
+def _terminal_supports_color():
+    if os.getenv("NO_COLOR") is not None:
+        return False
+
+    if os.getenv("CLICOLOR_FORCE") == "1":
+        return True
+
+    if os.getenv("TERM", "").lower() == "dumb":
+        return False
+
+    if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+        return False
+
+    if sys.platform == "win32":
+        # modern terminals often support ANSI out of the box.
+        if os.getenv("WT_SESSION") or os.getenv("ANSICON") or os.getenv("ConEmuANSI") == "ON":
+            return True
+        return _enable_windows_ansi()
+
+    return True
+
+
+_USE_COLOR = _terminal_supports_color()
+
+_CLR_RESET = "\033[0m"
+_CLR_GREEN = "\033[92m"
+_CLR_YELLOW = "\033[93m"
+_CLR_RED = "\033[91m"
+_CLR_CYAN = "\033[96m"
+_CLR_MAGENTA = "\033[95m"
+
+
+def _paint(text, color):
+    if not _USE_COLOR:
+        return text
+    return f"{color}{text}{_CLR_RESET}"
+
+
+def _success(text):
+    print(_paint(text, _CLR_GREEN))
+
+
+def _warn(text):
+    print(_paint(text, _CLR_YELLOW))
+
+
+def _error(text):
+    print(_paint(text, _CLR_RED))
+
+
+def _info(text):
+    print(_paint(text, _CLR_CYAN))
+
+
+def _accent(text):
+    print(_paint(text, _CLR_MAGENTA))
+
 def _parse_time_window(value, label):
     if value is None:
         return None
@@ -73,8 +159,8 @@ def _parse_time_window(value, label):
     try:
         return datetime.strptime(value, "%Y-%m-%d %H:%M")
     except ValueError:
-        print(f"yo, '{label}' has a bad format: '{value}'")
-        print("use this format: YYYY-MM-DD HH:MM (example: 2026-03-04 14:30)")
+        _error(f"heads up: '{label}' has a bad format: '{value}'")
+        _info("use this format: YYYY-MM-DD HH:MM (example: 2026-03-04 14:30)")
         sys.exit(1)
 
 
@@ -144,13 +230,13 @@ def _resolve_runtime_settings(args):
     project_filters = _clean_project_filters(project_filters)
 
     if not project_filters:
-        print("yo, no project paths were provided.")
-        print("set PROJECT_FILTERS in the file or pass --project in terminal.")
+        _error("heads up: no project paths were provided.")
+        _info("set PROJECT_FILTERS in the file or pass --project in terminal.")
         sys.exit(1)
 
     version_depth = args.depth if args.depth is not None else VERSION_DEPTH
     if version_depth <= 0:
-        print("yo, version depth must be 1 or higher 😅")
+        _error("quick fix: version depth must be 1 or higher 😅")
         sys.exit(1)
 
     output_dir = Path(args.output_dir).expanduser() if args.output_dir else OUTPUT_DIR
@@ -254,8 +340,8 @@ def recover(runtime):
 
     # just a quick check to make sure the history folder exists before we do anything
     if not history_path:
-        print("man, i can't find a VS Code history folder 😩")
-        print("i checked these paths:")
+        _error("man, i can't find a VS Code history folder 😩")
+        _warn("i checked these paths:")
         for candidate in history_candidates:
             print(f"  - {candidate}")
         return
@@ -271,24 +357,24 @@ def recover(runtime):
         try:
             hours_back = float(hours_back)
         except (TypeError, ValueError):
-            print(f"yo, HOURS_BACK must be a number. got: {hours_back}")
+            _error(f"quick fix: HOURS_BACK must be a number. got: {hours_back}")
             sys.exit(1)
 
         if hours_back <= 0:
-            print("yo, HOURS_BACK needs to be greater than 0 😅")
+            _error("quick fix: HOURS_BACK needs to be greater than 0 😅")
             sys.exit(1)
 
         end_dt = datetime.now()
         start_dt = end_dt - timedelta(hours=hours_back)
 
     if start_dt and end_dt and start_dt > end_dt:
-        print("yo, TIME_WINDOW_START can't be after TIME_WINDOW_END 😅")
+        _error("quick fix: TIME_WINDOW_START can't be after TIME_WINDOW_END 😅")
         sys.exit(1)
 
     if start_dt or end_dt:
-        print("time filter is ON. only recovering snapshots in this window:")
-        print(f"  start: {start_dt if start_dt else 'no lower limit'}")
-        print(f"  end  : {end_dt if end_dt else 'no upper limit'}")
+        _info("time filter is ON. only recovering snapshots in this window:")
+        _accent(f"  start: {start_dt if start_dt else 'no lower limit'}")
+        _accent(f"  end  : {end_dt if end_dt else 'no upper limit'}")
 
     total_count = 0
     total_skipped_unchanged = 0
@@ -307,10 +393,10 @@ def recover(runtime):
 
         # if the destination exists, ask before stomping on it
         if project_output_dir.exists():
-            print(f"\n🔥 whoa, slow down! '{project_output_dir}' already exists.")
-            print("   if we keep going we'll stomp whatever's in there.")
+            _warn(f"\n🔥 whoa, slow down! '{project_output_dir}' already exists.")
+            _warn("   if we keep going we'll stomp whatever's in there.")
             print()  # just a little spacing for readability
-            print("   type 'yes' to overwrite, 'no' to skip this project, or 'nuke' to delete the whole folder and start fresh.")
+            _warn("   type 'yes' to overwrite, 'no' to skip this project, or 'nuke' to delete the whole folder and start fresh.")
             print()  # more spacing for readability
             answer = input("   what's your pick? (yes / no / nuke): ").strip().lower()
             
@@ -319,7 +405,7 @@ def recover(runtime):
                 shutil.rmtree(project_output_dir)
                 project_output_dir.mkdir(parents=True)
             elif answer != "yes":
-                print(f"   OK, skipping {project_name} this round.")
+                _warn(f"   OK, skipping {project_name} this round.")
                 continue
 
         if not project_output_dir.exists():
@@ -395,7 +481,7 @@ def recover(runtime):
                         if only_changed_or_added and current_project_file.exists():
                             try:
                                 if filecmp.cmp(source_file, current_project_file, shallow=False):
-                                    print(f"unchanged, skipped: {relative_to_project}")
+                                    _warn(f"unchanged, skipped: {relative_to_project}")
                                     skipped_unchanged += 1
                                     continue
                             except OSError:
@@ -407,7 +493,7 @@ def recover(runtime):
                         target_file.parent.mkdir(parents=True, exist_ok=True)
 
                         shutil.copy2(source_file, target_file)
-                        print(f"restored ({label}): {relative_to_project}")
+                        _success(f"restored ({label}): {relative_to_project}")
                         count += 1
 
             except:
@@ -415,7 +501,7 @@ def recover(runtime):
                 pass
 
         # just a little message after each project is done so you can see the progress
-        print(
+        _success(
             f"\nall done for project '{project_name}'. recovered {count} files"
             f" (skipped {skipped_unchanged} unchanged, {skipped_outside_window} outside time window)"
             f" to: {project_output_dir} 🎉"
@@ -425,7 +511,7 @@ def recover(runtime):
         total_skipped_outside_window += skipped_outside_window
 
     # final message after all projects are done
-    print(
+    _success(
         f"\nall done. recovered a total of {total_count} files across all projects"
         f" (skipped {total_skipped_unchanged} unchanged, {total_skipped_outside_window} outside time window)"
         f" to: {output_dir} 🎉"
@@ -436,9 +522,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     runtime = _resolve_runtime_settings(args)
 
-    print("\n" + "="*60)
-    print("   🛠️  VSCode Local History Recovery Tool  🛠️")
-    print("" + "="*60 + "\n")
-    print("Hey there. I’m going to dig through VSCode’s secret stash and bring your lost files back to life.")
-    print("Be patient, maybe grab a coffee, or just stare at the terminal like it’s a sci‑fi movie. 🍿\n")
+    _info("\n" + "="*60)
+    _accent("   🛠️  VSCode Local History Recovery Tool  🛠️")
+    _info("" + "="*60 + "\n")
+    _info("Hey there. I’m going to dig through VSCode’s secret stash and bring your lost files back to life.")
+    _info("Be patient, maybe grab a coffee, or just stare at the terminal like it’s a sci-fi movie. 🍿\n")
     recover(runtime)

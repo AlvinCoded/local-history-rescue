@@ -6,7 +6,7 @@ Technically it was my fault for not reading the prompt closely, but man, it hurt
 
 I looked everywhere for a way to bulk-restore my files using VS Code's built-in "Local History," but apparently, the only way to do it is to click every single file in the UI and manually restore it. If you have 50 files, you're looking at a very bad afternoon.
 
-I wrote this script to solve that. It reaches into the hidden folders where VS Code stores its "Timeline" snapshots and pulls your code back from the dead.🙌
+These scripts were written to solve that.
 
 ## What this does
 It digs into the internal VS Code history folders, filters for files belonging to your specific project, and pulls out the version saved right before the "big wipe."
@@ -80,6 +80,65 @@ Flag notes:
 - `--project` can be repeated.
 - `--hours-back` only applies when `--start/--end` are not provided.
 - `--all-files` disables changed-only filtering for that run.
+
+## Experimental: Offline ML Recovery (`recover_ml.py`)
+
+If you want the script to get smarter over time, use `recover_ml.py`.
+
+> Note: This is an experimental feature and may not be as polished.
+
+**What it does:**
+- Uses a small local scoring model (no cloud calls, no online dependency).
+- Scores multiple snapshot candidates per file and picks the best one.
+- Saves a run manifest so you can label "which candidate was actually correct".
+- Trains from those labels and updates model weights for future recoveries.
+- Supports interactive human-in-the-loop review in terminal (`--label-interactive`) and learns during the same run.
+- Supports uncertainty-based active learning (`--interactive-uncertain-only`) so it only asks on low-confidence picks.
+- Adds drift-aware adaptive thresholds (asks for more review when model quality drops).
+- Adds a contextual bandit strategy selector that auto-picks ranking style (`balanced`, `recency`, `similarity`, `missing-file`) based on file/path context plus feedback rewards.
+- Adds `--autonomous` with safety gates so high-confidence files can be accepted automatically while risky ones still require review.
+
+**Basic run:**
+`python recover_ml.py --project "C:\\Users\\you\\Desktop\\my-project"`
+> This will run the recovery using the current model weights and save a manifest of what it picked for each file. You can then review the manifest, label which candidates were correct, and train the model with that feedback for next time.
+
+**Interactive one-flow run (approve/reject + online training):**
+`python recover_ml.py --project "C:\\Users\\you\\Desktop\\my-project" --label-interactive`
+> In this mode, after the script picks a candidate for each file, it will show you the file path and candidate details in the terminal and ask you to label it as "correct" or "incorrect". The model will then update its weights immediately based on your feedback before moving on to the next file.
+
+**Only ask when uncertain (active learning):**
+`python recover_ml.py --project "C:\\Users\\you\\Desktop\\my-project" --label-interactive --interactive-uncertain-only --confidence-threshold 0.70`
+> With this setup, the script will only prompt you for feedback on files where the model's confidence is below 70%. For high-confidence picks, it will automatically accept them without asking.
+
+**Autonomous mode (with safety gates):**
+`python recover_ml.py --project "C:\\Users\\you\\Desktop\\my-project" --autonomous`
+> In autonomous mode, the script will automatically accept candidates that have a confidence score above a certain threshold (default 0.85) and will only ask for review on those that fall below that threshold. You can adjust the confidence threshold with `--autonomous-min-confidence` and also set a maximum number of files to auto-accept with `--autonomous-max-files` to prevent too many risky picks, as seen in the example below. 👇
+
+**Autonomous mode with stricter confidence + cap:**
+`python recover_ml.py --project "C:\\Users\\you\\Desktop\\my-project" --autonomous --autonomous-min-confidence 0.92 --autonomous-max-files 80`
+
+It saves model + manifest here by default:
+- `~/.vscode_history_rescue_ml/model.json`
+- `~/.vscode_history_rescue_ml/last_manifest.json`
+
+Train after you review results:
+1. Open `last_manifest.json` and copy candidate IDs you consider correct.
+2. Create `labels.json` in this format:
+`{"src/file.py": "candidate_id_here"}`
+3. Train:
+`python recover_ml.py --train --labels labels.json`
+
+**Remember:**
+- This is intentionally lightweight and fully offline.
+- It is not an LLM; it is an incremental ranking model tuned for this recovery task.
+- Under the hood it now uses SGD-style online updates with regularization, gradient clipping, and averaged weights for better stability.
+- Drift signal is computed from recent feedback accuracy and used to adapt query behavior.
+- Contextual bandit arm rewards update only when explicit feedback exists (manual review decisions).
+
+**Some references used while building this:**
+- Multi-armed bandit overview (exploration vs exploitation, contextual variants): https://en.wikipedia.org/wiki/Multi-armed_bandit
+- Chu, Li, Reyzin, Schapire (AISTATS 2011), *Contextual Bandits with Linear Payoff Functions*: https://proceedings.mlr.press/v15/chu11a.html
+- Li, Chu, Langford, Schapire (WWW 2010), *A Contextual-Bandit Approach to Personalized News Article Recommendation*: https://arxiv.org/abs/1003.0146
 
 ## Terminal Experience
 
