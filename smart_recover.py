@@ -68,6 +68,7 @@ HOURS_BACK = None
 MODEL_STATE_DIR = Path.home() / ".vscode_history_rescue_ml"
 MODEL_STATE_FILE = MODEL_STATE_DIR / "model.json"
 MANIFEST_FILE = MODEL_STATE_DIR / "last_manifest.json"
+RUN_STATE_FILE = MODEL_STATE_DIR / "run_state.json"
 
 # 8. learning knobs.
 # defaults are intentionally lightweight so updates stay stable.
@@ -249,6 +250,7 @@ def _build_arg_parser():
     parser.add_argument("--train", action="store_true", help="Train model using a manifest + labels JSON.")
     parser.add_argument("--manifest", default=None, help="Manifest path (default: last manifest).")
     parser.add_argument("--labels", default=None, help="Labels JSON path for training.")
+    parser.add_argument("--fresh-run", action="store_true", help="Ignore any resumable run state and start from scratch.")
 
     return parser
 
@@ -338,7 +340,155 @@ def _resolve_runtime_settings(args):
         "autonomous": args.autonomous,
         "autonomous_min_confidence": autonomous_min_conf,
         "autonomous_max_files": autonomous_max_files,
+        "fresh_run": args.fresh_run,
     }
+
+
+def _runtime_resume_signature(runtime):
+    # signature prevents accidental resume against unrelated runs.
+    projects = [_normalized_path_key(Path(p).resolve()) for p in runtime["project_filters"]]
+    projects = sorted(set(projects))
+
+    return {
+        "projects": projects,
+        "output_dir": _normalized_path_key(runtime["output_dir"].expanduser().resolve()),
+        "inplace": bool(runtime["inplace"]),
+        "label_interactive": bool(runtime["label_interactive"]),
+        "autonomous": bool(runtime["autonomous"]),
+    }
+
+
+def _normalized_path_key(path_like):
+    # normalize separators/case so resume works across minor CLI path formatting differences.
+    raw = str(path_like)
+    normalized = os.path.normpath(raw)
+    if sys.platform == "win32":
+        normalized = os.path.normcase(normalized)
+    return normalized.replace("\\", "/")
+
+
+def _resume_compatible(state_sig, expected_sig):
+    if not isinstance(state_sig, dict):
+        return False
+
+    expected_projects = set(expected_sig.get("projects", []))
+    state_projects = set(state_sig.get("projects", []))
+    if not expected_projects or expected_projects != state_projects:
+        return False
+
+    # keep mode compatibility strict enough to avoid surprising behavior.
+    if bool(state_sig.get("label_interactive")) != bool(expected_sig.get("label_interactive")):
+        return False
+    if bool(state_sig.get("autonomous")) != bool(expected_sig.get("autonomous")):
+        return False
+
+    # output dir + inplace are safety-critical for where files land.
+    if bool(state_sig.get("inplace")) != bool(expected_sig.get("inplace")):
+        return False
+    if str(state_sig.get("output_dir", "")) != str(expected_sig.get("output_dir", "")):
+        return False
+
+    return True
+
+
+def _load_resume_state(runtime):
+    if runtime.get("fresh_run"):
+        return {
+            "enabled": False,
+            "processed": set(),
+            "manifest": None,
+            "counters": {},
+        }
+
+    # resume matters most when humans are in the loop or autonomous mode can be long-running.
+    if not (runtime["label_interactive"] or runtime["autonomous"]):
+        return {
+            "enabled": False,
+            "processed": set(),
+            "manifest": None,
+            "counters": {},
+        }
+
+    if not RUN_STATE_FILE.exists():
+        return {
+            "enabled": False,
+            "processed": set(),
+            "manifest": None,
+            "counters": {},
+        }
+
+    try:
+        with open(RUN_STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        _warn("resume note: run_state.json is unreadable, starting fresh.")
+        return {
+            "enabled": False,
+            "processed": set(),
+            "manifest": None,
+            "counters": {},
+        }
+
+    expected_sig = _runtime_resume_signature(runtime)
+    state_sig = state.get("runtime_signature")
+    if not _resume_compatible(state_sig, expected_sig):
+        _info("resume note: prior run state exists but settings differ, so this is a fresh run.")
+        return {
+            "enabled": False,
+            "processed": set(),
+            "manifest": None,
+            "counters": {},
+        }
+
+    processed_raw = state.get("processed", [])
+    processed = set(x for x in processed_raw if isinstance(x, str))
+
+    manifest = None
+    if MANIFEST_FILE.exists():
+        try:
+            with open(MANIFEST_FILE, "r", encoding="utf-8") as f:
+                maybe_manifest = json.load(f)
+            if isinstance(maybe_manifest, dict) and isinstance(maybe_manifest.get("files"), list):
+                manifest = maybe_manifest
+        except (OSError, json.JSONDecodeError):
+            manifest = None
+
+    _accent(f"resume mode: continuing from {len(processed)} already-processed file(s).")
+
+    return {
+        "enabled": True,
+        "processed": processed,
+        "manifest": manifest,
+        "counters": state.get("counters", {}),
+    }
+
+
+def _save_resume_state(runtime, processed, counters):
+    MODEL_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state = {
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "runtime_signature": _runtime_resume_signature(runtime),
+        "processed": sorted(processed),
+        "counters": counters,
+    }
+    with open(RUN_STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+
+
+def _clear_resume_state():
+    try:
+        if RUN_STATE_FILE.exists():
+            RUN_STATE_FILE.unlink()
+    except OSError:
+        pass
+
+
+def _processed_key(project_path, relative_to_project):
+    rel = str(relative_to_project).replace("\\", "/")
+    project_key = _normalized_path_key(project_path)
+    if sys.platform == "win32":
+        rel = rel.lower()
+    return f"{project_key}::{rel}"
 
 
 def _find_history_path():
@@ -1025,21 +1175,42 @@ def recover(runtime):
     output_dir = runtime["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest = {
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "model_file": str(MODEL_STATE_FILE),
-        "files": [],
-    }
+    resume_ctx = _load_resume_state(runtime)
 
-    total_count = 0
-    total_skipped_unchanged = 0
-    total_skipped_no_candidates = 0
-    total_interactive_labeled = 0
-    total_autonomous_accepted = 0
-    total_safety_prompts = 0
+    manifest = resume_ctx["manifest"]
+    if manifest is None:
+        manifest = {
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "model_file": str(MODEL_STATE_FILE),
+            "files": [],
+        }
+
+    total_count = int(resume_ctx["counters"].get("total_count", 0))
+    total_skipped_unchanged = int(resume_ctx["counters"].get("total_skipped_unchanged", 0))
+    total_skipped_no_candidates = int(resume_ctx["counters"].get("total_skipped_no_candidates", 0))
+    total_interactive_labeled = int(resume_ctx["counters"].get("total_interactive_labeled", 0))
+    total_autonomous_accepted = int(resume_ctx["counters"].get("total_autonomous_accepted", 0))
+    total_safety_prompts = int(resume_ctx["counters"].get("total_safety_prompts", 0))
+    processed_keys = resume_ctx["processed"]
+
+    def checkpoint_progress():
+        _save_resume_state(
+            runtime,
+            processed_keys,
+            {
+                "total_count": total_count + recovered_for_project,
+                "total_skipped_unchanged": total_skipped_unchanged + skipped_unchanged,
+                "total_skipped_no_candidates": total_skipped_no_candidates + skipped_no_candidates,
+                "total_interactive_labeled": total_interactive_labeled,
+                "total_autonomous_accepted": total_autonomous_accepted,
+                "total_safety_prompts": total_safety_prompts,
+            },
+        )
+        _persist_recovery_state(manifest, model)
 
     for project_filter in runtime["project_filters"]:
         filter_path = Path(project_filter).resolve()
+        filter_path_str = _normalized_path_key(filter_path)
         project_name = filter_path.name
 
         if runtime["inplace"]:
@@ -1098,6 +1269,10 @@ def recover(runtime):
             except ValueError:
                 continue
 
+            processed_key = _processed_key(filter_path_str, relative_to_project)
+            if processed_key in processed_keys:
+                continue
+
             entries.sort(key=lambda x: x.get("timestamp", 0))
 
             entries_in_window = []
@@ -1115,6 +1290,8 @@ def recover(runtime):
 
             if not entries_in_window:
                 skipped_no_candidates += 1
+                processed_keys.add(processed_key)
+                checkpoint_progress()
                 continue
 
             current_project_file = filter_path / relative_to_project
@@ -1156,6 +1333,8 @@ def recover(runtime):
 
             if not candidates:
                 skipped_no_candidates += 1
+                processed_keys.add(processed_key)
+                checkpoint_progress()
                 continue
 
             ranked = sorted(candidates, key=lambda c: c["score"], reverse=True)
@@ -1208,6 +1387,18 @@ def recover(runtime):
                         total_count += recovered_for_project
                         total_skipped_unchanged += skipped_unchanged
                         total_skipped_no_candidates += skipped_no_candidates
+                        _save_resume_state(
+                            runtime,
+                            processed_keys,
+                            {
+                                "total_count": total_count,
+                                "total_skipped_unchanged": total_skipped_unchanged,
+                                "total_skipped_no_candidates": total_skipped_no_candidates,
+                                "total_interactive_labeled": total_interactive_labeled,
+                                "total_autonomous_accepted": total_autonomous_accepted,
+                                "total_safety_prompts": total_safety_prompts,
+                            },
+                        )
                         _persist_recovery_state(manifest, model)
                         _print_recovery_summary(
                             runtime,
@@ -1222,6 +1413,8 @@ def recover(runtime):
                         return
 
                     if interactive_action == "skip":
+                        processed_keys.add(processed_key)
+                        checkpoint_progress()
                         continue
 
                     did_label = True
@@ -1246,6 +1439,18 @@ def recover(runtime):
                         total_count += recovered_for_project
                         total_skipped_unchanged += skipped_unchanged
                         total_skipped_no_candidates += skipped_no_candidates
+                        _save_resume_state(
+                            runtime,
+                            processed_keys,
+                            {
+                                "total_count": total_count,
+                                "total_skipped_unchanged": total_skipped_unchanged,
+                                "total_skipped_no_candidates": total_skipped_no_candidates,
+                                "total_interactive_labeled": total_interactive_labeled,
+                                "total_autonomous_accepted": total_autonomous_accepted,
+                                "total_safety_prompts": total_safety_prompts,
+                            },
+                        )
                         _persist_recovery_state(manifest, model)
                         _print_recovery_summary(
                             runtime,
@@ -1260,6 +1465,8 @@ def recover(runtime):
                         return
 
                     if interactive_action == "skip":
+                        processed_keys.add(processed_key)
+                        checkpoint_progress()
                         continue
 
                     did_label = True
@@ -1276,6 +1483,8 @@ def recover(runtime):
                     if filecmp.cmp(source_file, current_project_file, shallow=False):
                         _warn(f"unchanged, skipped: {relative_to_project}")
                         skipped_unchanged += 1
+                        processed_keys.add(processed_key)
+                        checkpoint_progress()
                         continue
                 except OSError:
                     pass
@@ -1324,6 +1533,9 @@ def recover(runtime):
                 }
             )
 
+            processed_keys.add(processed_key)
+            checkpoint_progress()
+
         _success(
             f"\nall done for project '{project_name}'. recovered {recovered_for_project} files"
             f" (skipped {skipped_unchanged} unchanged, {skipped_no_candidates} no-candidate)"
@@ -1336,6 +1548,7 @@ def recover(runtime):
         total_skipped_no_candidates += skipped_no_candidates
 
     _persist_recovery_state(manifest, model)
+    _clear_resume_state()
     _print_recovery_summary(
         runtime,
         total_count,

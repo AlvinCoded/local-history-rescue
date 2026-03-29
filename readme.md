@@ -1,4 +1,4 @@
-# vscode-local-history-rescue
+# local-history-rescue
 
 So, I was using a VS Code AI agent and it suggested a command to "fix" my workspace. I was moving fast, overlooked what it actually said, and hit enter. Turns out, it ran `git restore .` on a massive chunk of files I hadn't committed yet. 
 
@@ -6,7 +6,7 @@ Technically it was my fault for not reading the prompt closely, but man, it hurt
 
 I looked everywhere for a way to bulk-restore my files using VS Code's built-in "Local History," but apparently, the only way to do it is to click every single file in the UI and manually restore it. If you have 50 files, you're looking at a very bad afternoon.
 
-These scripts were written to solve that.
+This script was written to solve that.
 
 ## What this does
 It digs into the internal VS Code history folders, filters for files belonging to your specific project, and pulls out the version saved right before the "big wipe."
@@ -18,16 +18,15 @@ It auto-detects common history locations for VS Code variants (`Code`, `Code - I
 - Works on **Windows**, **Linux**, and **macOS**.
 
 ## How to use it
-1. Download `recover.py`.
+1. Download `smart_recover.py`.
 2. Open it and edit the top section:
    - `PROJECT_FILTERS`: A list of full paths to your messed-up projects. Yes, you can recover multiple projects at once. Just add them to the list, and the script will handle the rest.
-   - `VERSION_DEPTH`: Set to `2` to get the version just before the most recent save. You can set it higher if you want to go further back in time, but usually `2` is what you want for a recent accident.
    - `OUTPUT_DIR`: Where you want the recovered files to go. The script will create subfolders for each project automatically, so your recovered files stay organized.
    - `ONLY_CHANGED_OR_ADDED`: Default is `True`, which means it only restores files that are actually different from your current project (or missing entirely). This keeps the recovery output clean.
    - `TIME_WINDOW_START` / `TIME_WINDOW_END`: Optional local time window (`YYYY-MM-DD HH:MM`) so you only recover snapshots from a specific time range. Great when you only want files touched around the exact "uh oh" moment.
    - `HOURS_BACK`: Quick preset for "recover from the last N hours" (example: `HOURS_BACK = 2`). Nice when you don't want to type exact timestamps.
 
-3. Run it in your terminal: `python recover.py`.
+3. Run it in your terminal: `python smart_recover.py`.
    - If the script detects that a project folder already exists in the output directory, it will warn you and offer three choices:
      * `yes` – write the new files on top of whatever’s already there (existing files with the same names will be replaced).
      * `no` – skip this project entirely for now.
@@ -36,97 +35,124 @@ It auto-detects common history locations for VS Code variants (`Code`, `Code - I
 
 4. Go to your output folder and your code should be there, folder structure and all.
 
-## Where do the files end up?
-By default, everything lands in the `OUTPUT_DIR` you configured, under a subfolder for each project. That's the safe mode – your original code stays untouched while you poke through what got recovered.
+## Requirements
+- Python 3
+- No extra dependencies
 
-If you'd rather have the recovered bits dropped directly into the project itself, set `INPLACE = True` at the top of `recover.py`. When enabled the script will create a `vscode_history_recovered` _(feel free to rename it)_ folder at the root of each project and dump the files there. It'll still prompt you before overwriting an existing recovery folder, because accidents.
+## Quick Start (60 seconds)
+1. Open `smart_recover.py`.
+2. Set `PROJECT_FILTERS`.
+3. Optional config: `OUTPUT_DIR`, `INPLACE`, `ONLY_CHANGED_OR_ADDED`, `TIME_WINDOW_START`, `TIME_WINDOW_END`, `HOURS_BACK`.
+4. Run:
 
-> Note: `in‑place` recovery is opt‑in for a reason – it can overwrite existing files if you're **not** careful, and some people like to inspect the output in a separate location first.
+```bash
+python smart_recover.py
+```
 
-By default it also skips unchanged files and tells you how many were skipped in the summary. If you want the "recover everything no matter what" behavior, set `ONLY_CHANGED_OR_ADDED = False`.
+5. Inspect recovered files in your output folder.
 
-If you set a time window, `VERSION_DEPTH` is applied *inside that window* (not across all history ever). Example: if the window is from `2026-03-04 09:00` to `2026-03-04 10:00`, the script only picks versions from that hour.
+## Core Commands
+Basic run:
 
-Important behavior: if the same file has many edits inside the selected window, the script still restores that file only once per run. It picks one version based on `VERSION_DEPTH` (`1` = latest in window, `2` = one before latest, etc.).
-
-`HOURS_BACK` is only used when both `TIME_WINDOW_START` and `TIME_WINDOW_END` are `None`. If you set explicit start/end values, those win.
-
-## Terminal Flags (No file edits needed)
-
-You can also pass options directly in terminal and they override config values for that run.
-
-Basic run with one project:
-`python recover.py --project "C:\\Users\\you\\Desktop\\my-project"`
+```bash
+python smart_recover.py --project "C:\\Users\\you\\Desktop\\my-project"
+```
 
 Multiple projects:
-`python recover.py --project "C:\\proj-a" --project "C:\\proj-b"`
+
+```bash
+python smart_recover.py --project "C:\\proj-a" --project "C:\\proj-b"
+```
 
 Last 2 hours only:
-`python recover.py --project "C:\\proj-a" --hours-back 2`
+
+```bash
+python smart_recover.py --project "C:\\proj-a" --hours-back 2
+```
 
 Exact time window:
-`python recover.py --project "C:\\proj-a" --start "2026-03-05 09:00" --end "2026-03-05 11:30"`
 
-Recover all files (even unchanged ones):
-`python recover.py --project "C:\\proj-a" --all-files`
+```bash
+python smart_recover.py --project "C:\\proj-a" --start "2026-03-05 09:00" --end "2026-03-05 11:30"
+```
 
-In-place recovery folder inside each project:
-`python recover.py --project "C:\\proj-a" --inplace`
+Recover all files (including unchanged):
 
-Custom output dir + depth:
-`python recover.py --project "C:\\proj-a" --output-dir "D:\\Recovery" --depth 2`
+```bash
+python smart_recover.py --project "C:\\proj-a" --all-files
+```
 
-Flag notes:
-- `--project` can be repeated.
-- `--hours-back` only applies when `--start/--end` are not provided.
-- `--all-files` disables changed-only filtering for that run.
+Recover inside project (`vscode_history_recovered_ml`):
 
-## Experimental: Offline ML Recovery (`recover_ml.py`)
+```bash
+python smart_recover.py --project "C:\\proj-a" --inplace
+```
 
-If you want the script to get smarter over time, use `recover_ml.py`.
+Custom output folder:
 
-> Note: This is an experimental feature and may not be as polished.
+```bash
+python smart_recover.py --project "C:\\proj-a" --output-dir "D:\\Recovery"
+```
 
-**What it does:**
-- Uses a small local scoring model (no cloud calls, no online dependency).
-- Scores multiple snapshot candidates per file and picks the best one.
-- Saves a run manifest so you can label "which candidate was actually correct".
-- Trains from those labels and updates model weights for future recoveries.
-- Supports interactive human-in-the-loop review in terminal (`--label-interactive`) and learns during the same run.
-- Supports uncertainty-based active learning (`--interactive-uncertain-only`) so it only asks on low-confidence picks.
-- Adds drift-aware adaptive thresholds (asks for more review when model quality drops).
-- Adds a contextual bandit strategy selector that auto-picks ranking style (`balanced`, `recency`, `similarity`, `missing-file`) based on file/path context plus feedback rewards.
-- Adds `--autonomous` with safety gates so high-confidence files can be accepted automatically while risky ones still require review.
+Force a clean run (ignore resume checkpoint):
 
-**Basic run:**
-`python recover_ml.py --project "C:\\Users\\you\\Desktop\\my-project"`
-> This will run the recovery using the current model weights and save a manifest of what it picked for each file. You can then review the manifest, label which candidates were correct, and train the model with that feedback for next time.
+```bash
+python smart_recover.py --project "C:\\proj-a" --label-interactive --fresh-run
+```
 
-**Interactive one-flow run (approve/reject + online training):**
-`python recover_ml.py --project "C:\\Users\\you\\Desktop\\my-project" --label-interactive`
-> In this mode, after the script picks a candidate for each file, it will show you the file path and candidate details in the terminal and ask you to label it as "correct" or "incorrect". The model will then update its weights immediately based on your feedback before moving on to the next file.
+## Smart Modes (Still Offline)
+This script can rank multiple candidates per file and learn from your feedback over time.
 
-**Only ask when uncertain (active learning):**
-`python recover_ml.py --project "C:\\Users\\you\\Desktop\\my-project" --label-interactive --interactive-uncertain-only --confidence-threshold 0.70`
-> With this setup, the script will only prompt you for feedback on files where the model's confidence is below 70%. For high-confidence picks, it will automatically accept them without asking.
+Interactive review + online learning:
 
-**Autonomous mode (with safety gates):**
-`python recover_ml.py --project "C:\\Users\\you\\Desktop\\my-project" --autonomous`
-> In autonomous mode, the script will automatically accept candidates that have a confidence score above a certain threshold (default 0.85) and will only ask for review on those that fall below that threshold. You can adjust the confidence threshold with `--autonomous-min-confidence` and also set a maximum number of files to auto-accept with `--autonomous-max-files` to prevent too many risky picks, as seen in the example below. 👇
+```bash
+python smart_recover.py --project "C:\\Users\\you\\Desktop\\my-project" --label-interactive
+```
+> In this mode, the script will show you each candidate file it finds and ask you to label it as "keep" or "discard." Your feedback is used to update the model's understanding of what good recoveries look like, so it gets smarter with each run.
 
-**Autonomous mode with stricter confidence + cap:**
-`python recover_ml.py --project "C:\\Users\\you\\Desktop\\my-project" --autonomous --autonomous-min-confidence 0.92 --autonomous-max-files 80`
+Only ask when uncertain:
 
-It saves model + manifest here by default:
+```bash
+python smart_recover.py --project "C:\\Users\\you\\Desktop\\my-project" --label-interactive --interactive-uncertain-only --confidence-threshold 0.70
+```
+> In this mode, the script will only prompt you for files where the model's confidence is below 70%. For files above that threshold, it will automatically recover them without asking. This way, you can focus your attention on the files that need it most.
+
+Autonomous mode with safety gates:
+
+```bash
+python smart_recover.py --project "C:\\Users\\you\\Desktop\\my-project" --autonomous
+```
+> In autonomous mode, the script will automatically recover files it is confident about without asking for your input. However, it will only recover files where the confidence is above a default threshold (e.g., 0.80) and will limit the number of files recovered in one run (e.g., 50) to prevent any accidental mass recoveries. You can adjust these parameters with `--autonomous-min-confidence` and `--autonomous-max-files` like can be seen in the next example.
+
+Stricter autonomous mode:
+
+```bash
+python smart_recover.py --project "C:\\Users\\you\\Desktop\\my-project" --autonomous --autonomous-min-confidence 0.92 --autonomous-max-files 80
+```
+
+If you quit in the middle, the script now saves progress and resumes from where it left off when you run again with the same project + mode.
+
+## Train From Labels
+After a run, the script writes:
 - `~/.vscode_history_rescue_ml/model.json`
 - `~/.vscode_history_rescue_ml/last_manifest.json`
 
-Train after you review results:
-1. Open `last_manifest.json` and copy candidate IDs you consider correct.
-2. Create `labels.json` in this format:
-`{"src/file.py": "candidate_id_here"}`
+To train with your own labels:
+1. Open `last_manifest.json`
+2. Create `labels.json` like:
+
+```json
+{"src/file.py": "candidate_id_here"}
+```
+
 3. Train:
-`python recover_ml.py --train --labels labels.json`
+`python smart_recover.py --train --labels labels.json`
+
+Resume state is stored at:
+- `~/.vscode_history_rescue_ml/run_state.json`
+
+Resume is matched by project scope, mode (`--label-interactive` vs `--autonomous`), and destination safety settings (`--inplace` / output dir).
+Use `--fresh-run` anytime you want to deliberately ignore checkpoint state.
 
 **Remember:**
 - This is intentionally lightweight and fully offline.
@@ -164,7 +190,7 @@ No worries if Python isn't on your system yet. Here's a guide to get you started
    - Type `python --version` and hit Enter. You should see something like `Python 3.x.x`.
 
 4. **You're good to go!**:
-   - Now you can run the `recover.py` script and rescue your files like a pro. 🙌
+   - Now you can run the `smart_recover.py` script and rescue your files like a pro. 🙌
 
 > If you hit any snags, the Python website has a [Beginner's Guide](https://wiki.python.org/moin/BeginnersGuide) to help you out. Or just Google it, and you'll find tons of tutorials and videos.
 
