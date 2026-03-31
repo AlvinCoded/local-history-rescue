@@ -1,19 +1,10 @@
 # local-history-rescue
 
-So, I was using a VS Code AI agent and it suggested a command to "fix" my workspace. I was moving fast, overlooked what it actually said, and hit enter. Turns out, it ran `git restore .` on a massive chunk of files I hadn't committed yet. 
+What this does is, it digs into the internal VS Code history folders, filters for files belonging to your specific project, and pulls out the version saved right before the "big wipe."
 
-Technically it was my fault for not reading the prompt closely, but man, it hurt. All my work was wiped and Git had no record of it because I hadn't staged the changes.😭
+It auto-detects common history locations for VS Code variants (`Code`, `Code - Insiders`, `VSCodium`, and `Code - OSS`) across platforms.
 
-I looked everywhere for a way to bulk-restore my files using VS Code's built-in "Local History," but apparently, the only way to do it is to click every single file in the UI and manually restore it. If you have 50 files, you're looking at a very bad afternoon.
-
-This script was written to solve that.
-
-## What this does
-It digs into the internal VS Code history folders, filters for files belonging to your specific project, and pulls out the version saved right before the "big wipe."
-
-It auto-detects common history locations for VS Code variants (`Code`, `Code - Insiders`, `VSCodium`, and `Code - OSS`) on Windows, macOS, and Linux.
-
-## Prerequisites
+## What is needed
 - Just **Python 3**. No extra libraries to install or anything like that.
 - Works on **Windows**, **Linux**, and **macOS**.
 
@@ -34,22 +25,6 @@ It auto-detects common history locations for VS Code variants (`Code`, `Code - I
    That way you don’t accidentally clobber things without knowing what’s happening.
 
 4. Go to your output folder and your code should be there, folder structure and all.
-
-## Requirements
-- Python 3
-- No extra dependencies
-
-## Quick Start (60 seconds)
-1. Open `smart_recover.py`.
-2. Set `PROJECT_FILTERS`.
-3. Optional config: `OUTPUT_DIR`, `INPLACE`, `ONLY_CHANGED_OR_ADDED`, `TIME_WINDOW_START`, `TIME_WINDOW_END`, `HOURS_BACK`.
-4. Run:
-
-```bash
-python smart_recover.py
-```
-
-5. Inspect recovered files in your output folder.
 
 ## Core Commands
 Basic run:
@@ -100,7 +75,7 @@ Force a clean run (ignore resume checkpoint):
 python smart_recover.py --project "C:\\proj-a" --label-interactive --fresh-run
 ```
 
-## Smart Modes (Still Offline)
+## Smart Modes (Offline & Privacy-first)
 This script can rank multiple candidates per file and learn from your feedback over time.
 
 Interactive review + online learning:
